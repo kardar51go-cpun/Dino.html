@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="fa" dir="ltr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>دایناسور گوگل — T-Rex Runner</title>
+<style>
+  html,body{
+    margin:0;padding:0;height:100%;overflow:hidden;background:#f7f7f7;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;
+    transition:background-color .4s;
+  }
+  #stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;}
+  #wrap{width:100%;max-width:960px;padding:0 12px;box-sizing:border-box;}
+  canvas{
+    display:block;width:100%;height:auto;
+    image-rendering:pixelated;image-rendering:crisp-edges;
+  }
+</style>
+</head>
+<body>
+<div id="stage"><div id="wrap"><canvas id="c" width="600" height="150"></canvas></div></div>
+
+<script>
+(function () {
+'use strict';
+
+/* =========================================================
+   CONSTANTS
+   ========================================================= */
+const W = 600, H = 150;
+const GROUND_Y = 138;
+
+const GRAVITY   = 0.9;
+const JUMP_V    = -12;
+const START_SPEED = 6;
+const MAX_SPEED   = 13;
+const ACCEL       = 0.001;
+const SCORE_RATE  = 0.025;
+
+const DAY_BG   = [247, 247, 247], NIGHT_BG = [8, 8, 8];
+const DAY_FG   = [83, 83, 83],    NIGHT_FG = [172, 172, 172];
+
+/* =========================================================
+   IMAGE LOADING (استفاده از عکس شما)
+   ========================================================= */
+let dinoImage = new Image();
+let imageLoaded = false;
+
+// کاربر باید عکس را با نام dino.png در کنار فایل html ذخیره کند
+dinoImage.src = 'dino.png'; 
+
+dinoImage.onload = function() {
+    // حذف پس‌زمینه سفید عکس تا در حالت شب هم دیده شود
+    const oc = document.createElement('canvas');
+    oc.width = dinoImage.width;
+    oc.height = dinoImage.height;
+    const octx = oc.getContext('2d');
+    octx.drawImage(dinoImage, 0, 0);
+    
+    try {
+        const imgData = octx.getImageData(0, 0, oc.width, oc.height);
+        const data = imgData.data;
+        for (let i = 0; i < data.length; i += 4) {
+            // اگر رنگ پیکسل接近 سفید بود، شفافش کن
+            if (data[i] > 240 && data[i+1] > 240 && data[i+2] > 240) {
+                data[i+3] = 0; 
+            }
+        }
+        octx.putImageData(imgData, 0, 0);
+        dinoImage = oc; // جایگزینی عکس اصلی با عکس بدون پس‌زمینه
+    } catch (e) {
+        console.log("خطا در پردازش عکس (احتمالاً به دلیل اجرای فایل به صورت لوکال):", e);
+    }
+    imageLoaded = true;
+};
+
+/* =========================================================
+   PIXEL SPRITES (فقط برای حالت نشسته و موانع)
+   ========================================================= */
+// از این آرایه فقط برای حالت سُر خوردن (Duck) استفاده می‌شود
+const TREX_DUCK = [
+  '......................######..',
+  '.....................########.',
+  '.....................##.####..',
+  '.....................########.',
+  '.....................#####....',
+  '#....................######...',
+  '###.................#########.',
+  '#############################.',
+  '.############################.',
+  '..###########################.',
+  '....#########################.',
+  '.........###.....###..........',
+  '.........###.....###..........'
+];
+
+// آرایه جایگزین در صورتی که عکس لود نشود
+const TREX_STAND = [
+  '................######',
+  '...............#######',
+  '...............##.####',
+  '...............#######',
+  '...............#######',
+  '...............#####..',
+  '...............######.',
+  '#..............#######',
+  '##............########',
+  '###..........#########',
+  '####........##########',
+  '#####......###########',
+  '######....############',
+  '######################',
+  '.#####################',
+  '..####################',
+  '...###################',
+  '....##################',
+  '.....###############..',
+  '......#############...',
+  '.......###########....',
+  '........#########.....',
+  '........###..###......',
+  '........##....##......'
+];
+
+const CACTUS_SMALL = [
+  '...##...','...##...','...##...','#..##..#','#..##..#','#..##..#','####..##',
+  '.#######','...##...','...##...','...##...','...##...','...##...','...##...',
+  '...##...','...##...','...##...'
+];
+
+const CACTUS_LARGE = [
+  '....##......','....##......','....##......','....##......','#...##......',
+  '#...##...##.','#...##...##.','#...##...##.','#...##...##.','#...##...##.',
+  '#####....##.','....##...##.','....##...##.','....##...##.','....##...##.',
+  '....##...##.','....########','....##......','....##......','....##......',
+  '....##......','....##......','....##......','....##......','....##......'
+];
+
+const BIRD_UP = [
+  '..........#####........','..........######.......','..........#.####.......',
+  '..........######.......','.........#####.........','........#####..........',
+  '.......######..........','......#######..........','.....########..........',
+  '....#########..........','...##########..........','..###########..........',
+  '.############..........','###############........','.#############.........',
+  '..###########..........','...#########...........','....#######............',
+  '.....###...............','......#................'
+];
+
+const BIRD_DOWN = [
+  '..........#####........','..........######.......','..........#.####.......',
+  '..........######.......','.........#####.........','........#####..........',
+  '.......######..........','......#######..........','.....########..........',
+  '....#########..........','###############........','.#############.........',
+  '..###########..........','...#########...........','....#######............',
+  '.....###...............','......#................'
+];
+
+const CLOUD = [
+  '....#####....','..#########..','#############','.###########.','...#######...'
+];
+
+const FONT = {
+  '0': ['#####','#...#','#...#','#...#','#...#','#...#','#####'],
+  '1': ['..#..','.##..','..#..','..#..','..#..','..#..','#####'],
+  '2': ['#####','....#','....#','#####','#....','#....','#####'],
+  '3': ['#####','....#','....#','#####','....#','....#','#####'],
+  '4': ['#...#','#...#','#...#','#####','....#','....#','....#'],
+  '5': ['#####','#....','#....','#####','....#','....#','#####'],
+  '6': ['#####','#....','#....','#####','#...#','#...#','#####'],
+  '7': ['#####','....#','....#','....#','....#','....#','....#'],
+  '8': ['#####','#...#','#...#','#####','#...#','#...#','#####'],
+  '9': ['#####','#...#','#...#','#####','....#','....#','#####'],
+  'H': ['#...#','#...#','#...#','#####','#...#','#...#','#...#'],
+  'I': ['#####','..#..','..#..','..#..','..#..','..#..','#####'],
+  'G': ['#####','#....','#....','#.###','#...#','#...#','#####'],
+  'A': ['..#..','.#.#.','#...#','#...#','#####','#...#','#...#'],
+  'M': ['#...#','##.##','#.#.#','#...#','#...#','#...#','#...#'],
+  'E': ['#####','#....','#....','####.','#....','#....','#####'],
+  'O': ['#####','#...#','#...#','#...#','#...#','#...#','#####'],
+  'V': ['#...#','#...#','#...#','#...#','#...#','.#.#.','..#..'],
+  'R': ['####.','#...#','#...#','####.','#.#..','#..#.','#...#'],
+  'P': ['####.','#...#','#...#','####.','#....','#....','#....'],
+  'S': ['#####','#....','#....','#####','....#','....#','#####'],
+  'C': ['#####','#....','#....','#....','#....','#....','#####'],
+  'T': ['#####','..#..','..#..','..#..','..#..','..#..','..#..'],
+  'K': ['#...#','#..#.','#.#..','##...','#.#..','#..#.','#...#'],
+  ' ': ['.....','.....','.....','.....','.....','.....','.....']
+};
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+
+function drawSprite(pixels, x, y, scale, color) {
+  ctx.fillStyle = color;
+  for (let r = 0; r < pixels.length; r++) {
+    const row = pixels[r];
+    let c = 0;
+    while (c < row.length) {
+      if (row[c] === '#') {
+        const start = c;
+        while (c < row.length && row[c] === '#') c++;
+        ctx.fillRect(x + start * scale, y + r * scale, (c - start) * scale, scale);
+      } else { c++; }
+    }
+  }
+}
+
+function drawText(str, x, y, scale, color) {
+  ctx.fillStyle = color;
+  let cx = x;
+  for (let i = 0; i < str.length; i++) {
+    const g = FONT[str[i]];
+    if (g) {
+      for (let r = 0; r < g.length; r++) {
+        const row = g[r];
+        let c = 0;
+        while (c < 5) {
+          if (row[c] === '#') {
+            const st = c;
+            while (c < 5 && row[c] === '#') c++;
+            ctx.fillRect(cx + st * scale, y + r * scale, (c - st) * scale, scale);
+          } else { c++; }
+        }
+      }
+    }
+    cx += 6 * scale;
+  }
+}
+
+function textWidth(str, scale) { return str.length * 6 * scale; }
+function rgb(c) { return 'rgb(' + (c[0]|0) + ',' + (c[1]|0) + ',' + (c[2]|0) + ')'; }
+function mix(a, b, t) { return [ a[0] + (b[0]-a[0])*t, a[1] + (b[1]-a[1])*t, a[2] + (b[2]-a[2])*t ]; }
+function overlap(a, b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
+
+/* =========================================================
+   AUDIO
+   ========================================================= */
+let AC = null;
+function ensureAudio() {
+  if (AC) return;
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (Ctx) AC = new Ctx();
+}
+function blip(f0, f1, dur, type, vol) {
+  if (!AC || AC.state === 'suspended') return;
+  const t = AC.currentTime;
+  const o = AC.createOscillator();
+  const g = AC.createGain();
+  o.type = type || 'square';
+  o.frequency.setValueAtTime(f0, t);
+  o.frequency.exponentialRampToValueAtTime(Math.max(f1, 1), t + dur);
+  g.gain.setValueAtTime(vol || 0.05, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(AC.destination);
+  o.start(t); o.stop(t + dur + 0.02);
+}
+const SFX = {
+  jump:  () => blip(420, 780, 0.09, 'square', 0.045),
+  point: () => blip(980, 980, 0.07, 'square', 0.05),
+  over:  () => { blip(300, 90, 0.32, 'square', 0.07); blip(160, 60, 0.42, 'triangle', 0.05); }
+};
+
+/* =========================================================
+   GROUND
+   ========================================================= */
+const GROUND_TILE = 600;
+const GROUND_BUMPS = (function () {
+  let s = 987654321;
+  function rnd() { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; }
+  const out = [];
+  for (let i = 0; i < 46; i++) {
+    out.push({
+      x: Math.floor(rnd() * GROUND_TILE),
+      y: GROUND_Y + 5 + Math.floor(rnd() * 4),
+      w: 2 + Math.floor(rnd() * 7),
+      h: 1 + Math.floor(rnd() * 2)
+    });
+  }
+  return out;
+})();
+
+/* =========================================================
+   T-REX HITBOXES
+   ========================================================= */
+const TREX_STAND_BOXES = [
+  { x: 14, y: 0,  w: 8,  h: 14 }, // سر و گردن
+  { x: 1,  y: 14, w: 16, h: 10 }, // بدن
+  { x: 8,  y: 24, w: 10, h: 4 }   // پاها
+];
+const TREX_DUCK_BOXES = [
+  { x: 20, y: 0,  w: 10, h: 6 },  // سر
+  { x: 2,  y: 6,  w: 24, h: 7 }   // بدن
+];
+
+const trex = {
+  x: 25,
+  y: GROUND_Y,
+  vy: 0,
+  onGround: true,
+  duckKey: false,
+  ducking: false,
+  frame: 0,
+  frameTimer: 0,
+
+  reset() {
+    this.y = GROUND_Y;
+    this.vy = 0;
+    this.onGround = true;
+    this.duckKey = false;
+    this.ducking = false;
+    this.frame = 0;
+    this.frameTimer = 0;
+  },
+
+  get height() { return this.ducking ? 26 : 48; }, // ارتفاع دایناسور
+  get top()    { return this.y - this.height; },
+
+  boxes() {
+    const src = this.ducking ? TREX_DUCK_BOXES : TREX_STAND_BOXES;
+    const tx = this.x, ty = this.top;
+    return src.map(b => ({ x: tx + b.x, y: ty + b.y, w: b.w, h: b.h }));
+  },
+
+  jump() {
+    if (this.onGround) {
+      this.vy = JUMP_V;
+      this.onGround = false;
+      SFX.jump();
+    }
+  },
+
+  endJump() {
+    if (this.vy < -6) this.vy = -6;
+  },
+
+  update(dt) {
+    this.ducking = this.duckKey;
+
+    this.frameTimer += dt;
+    if (this.frameTimer > 5.5) {
+      this.frame ^= 1;
+      this.frameTimer = 0;
+    }
+
+    if (!this.onGround) {
+      const g = this.duckKey ? 3.2 : 1;
+      this.vy += GRAVITY * g * dt;
+      this.y  += this.vy * dt;
+      if (this.y >= GROUND_Y) {
+        this.y = GROUND_Y;
+        this.vy = 0;
+        this.onGround = true;
+      }
+    } else {
+      this.y = GROUND_Y;
+    }
+  }
+};
+
+/* =========================================================
+   GAME STATE
+   ========================================================= */
+const game = {
+  state: 'waiting',
+  speed: START_SPEED,
+  distance: 0,
+  score: 0,
+  prevScore: 0,
+  highScore: parseInt(localStorage.getItem('trex-hi') || '0', 10) || 0,
+  newHigh: false,
+
+  night: false,
+  nightProgress: 0,
+  nextNightScore: 700,
+
+  obstacles: [],
+  clouds: [],
+  groundOffset: 0,
+  spawnCooldown: 420,
+
+  flashTimer: 0,
+  overTime: 0
+};
+
+function resetGame() {
+  game.state = 'playing';
+  game.speed = START_SPEED;
+  game.distance = 0;
+  game.score = 0;
+  game.prevScore = 0;
+  game.newHigh = false;
+  game.night = false;
+  game.nightProgress = 0;
+  game.nextNightScore = 700;
+  game.obstacles.length = 0;
+  game.groundOffset = 0;
+  game.spawnCooldown = 420;
+  game.flashTimer = 0;
+  trex.reset();
+}
+
+/* =========================================================
+   OBSTACLES
+   ========================================================= */
+function spawnObstacle() {
+  const spd = game.speed;
+  const roll = Math.random();
+
+  if (spd > 8.5 && roll < 0.22) {
+    const levels = [0, 32, 62];
+    const lvl = levels[Math.floor(Math.random() * levels.length)];
+    const h = 34, w = 46;
+    game.obstacles.push({
+      kind: 'bird',
+      x: W + 12,
+      y: GROUND_Y - h - lvl,
+      w: w, h: h,
+      frame: 0, frameTimer: 0
+    });
+    game.spawnCooldown = 260 + spd * 30 + Math.random() * 160;
+    return;
+  }
+
+  const small = roll < 0.55;
+  const w = small ? 16 : 24;
+  const h = small ? 34 : 50;
+
+  let count = 1;
+  if (small && spd > 4) {
+    count = 1 + Math.floor(Math.random() * 3);
+  } else if (!small) {
+    if (spd > 9)      count = 1 + Math.floor(Math.random() * 3);
+    else if (spd > 6) count = 1 + Math.floor(Math.random() * 2);
+  }
+
+  for (let i = 0; i < count; i++) {
+    game.obstacles.push({
+      kind: small ? 'small' : 'large',
+      x: W + 12 + i * w,
+      y: GROUND_Y - h,
+      w: w, h: h
+    });
+  }
+
+  game.spawnCooldown = (w * count) * spd * 0.9 + 110 + Math.random() * 170;
+}
+
+function obstacleBox(o) {
+  if (o.kind === 'small') return { x: o.x + 2, y: o.y, w: o.w - 4, h: o.h };
+  if (o.kind === 'large') return { x: o.x + 2, y: o.y, w: o.w - 4, h: o.h };
+  return { x: o.x + 8, y: o.y + 8, w: o.w - 16, h: o.h - 16 };
+}
+
+function updateClouds(dt) {
+  for (let i = game.clouds.length - 1; i >= 0; i--) {
+    const c = game.clouds[i];
+    c.x -= (0.35 + game.speed * 0.06) * dt;
+    if (c.x + 46 < -10) game.clouds.splice(i, 1);
+  }
+  if (game.clouds.length < 6 && Math.random() < 0.008 * dt) {
+    game.clouds.push({ x: W + 20, y: 12 + Math.random() * 48 });
+  }
+}
+
+/* =========================================================
+   UPDATE
+   ========================================================= */
+function update(dt) {
+  const target = game.night ? 1 : 0;
+  if (game.nightProgress < target)
+    game.nightProgress = Math.min(target, game.nightProgress + dt / 26);
+  else if (game.nightProgress > target)
+    game.nightProgress = Math.max(target, game.nightProgress - dt / 26);
+
+  updateClouds(dt);
+
+  if (game.state === 'waiting') {
+    trex.frameTimer += dt;
+    if (trex.frameTimer > 5.5) { trex.frame ^= 1; trex.frameTimer = 0; }
+    return;
+  }
+
+  if (game.state === 'over') return;
+
+  game.speed = Math.min(game.speed + ACCEL * dt, MAX_SPEED);
+  const move = game.speed * dt;
+  game.distance += move;
+  game.groundOffset = (game.groundOffset + move) % GROUND_TILE;
+  game.score = Math.floor(game.distance * SCORE_RATE);
+
+  if (Math.floor(game.score / 100) > Math.floor(game.prevScore / 100)) {
+    game.flashTimer = 58;
+    SFX.point();
+  }
+  game.prevScore = game.score;
+
+  if (game.score >= game.nextNightScore) {
+    game.night = !game.night;
+    game.nextNightScore += 700;
+  }
+
+  if (game.flashTimer > 0) game.flashTimer -= dt;
+
+  game.spawnCooldown -= move;
+  if (game.spawnCooldown <= 0) spawnObstacle();
+
+  for (let i = game.obstacles.length - 1; i >= 0; i--) {
+    const o = game.obstacles[i];
+    o.x -= move;
+    if (o.kind === 'bird') {
+      o.frameTimer += dt;
+      if (o.frameTimer > 7) { o.frame ^= 1; o.frameTimer = 0; }
+    }
+    if (o.x + o.w < -30) game.obstacles.splice(i, 1);
+  }
+
+  trex.update(dt);
+
+  const tBoxes = trex.boxes();
+  for (let i = 0; i < game.obstacles.length; i++) {
+    const ob = obstacleBox(game.obstacles[i]);
+    for (let j = 0; j < tBoxes.length; j++) {
+      if (overlap(tBoxes[j], ob)) {
+        gameOver();
+        return;
+      }
+    }
+  }
+}
+
+function gameOver() {
+  game.state = 'over';
+  game.overTime = performance.now();
+  SFX.over();
+  if (game.score > game.highScore) {
+    game.highScore = game.score;
+    game.newHigh = true;
+    try { localStorage.setItem('trex-hi', String(game.highScore)); } catch (e) {}
+  }
+}
+
+/* =========================================================
+   RENDER
+   ========================================================= */
+function render(now) {
+  const p  = game.nightProgress;
+  const bg = mix(DAY_BG, NIGHT_BG, p);
+  const fg = mix(DAY_FG, NIGHT_FG, p);
+  const fgStr = rgb(fg);
+
+  ctx.fillStyle = rgb(bg);
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = fgStr;
+  ctx.fillRect(0, GROUND_Y, W, 2);
+
+  const off = game.groundOffset;
+  for (let tile = 0; tile < 2; tile++) {
+    const base = tile * GROUND_TILE - off;
+    if (base > W || base + GROUND_TILE < 0) continue;
+    for (let i = 0; i < GROUND_BUMPS.length; i++) {
+      const b = GROUND_BUMPS[i];
+      const bx = base + b.x;
+      if (bx > W + 10 || bx + b.w < -10) continue;
+      ctx.fillRect(bx, b.y, b.w, b.h);
+    }
+  }
+
+  for (let i = 0; i < game.clouds.length; i++) {
+    drawSprite(CLOUD, Math.round(game.clouds[i].x), Math.round(game.clouds[i].y), 2, fgStr);
+  }
+
+  for (let i = 0; i < game.obstacles.length; i++) {
+    const o = game.obstacles[i];
+    const ox = Math.round(o.x), oy = Math.round(o.y);
+    if (o.kind === 'small')      drawSprite(CACTUS_SMALL, ox, oy, 2, fgStr);
+    else if (o.kind === 'large') drawSprite(CACTUS_LARGE, ox, oy, 2, fgStr);
+    else                          drawSprite(o.frame ? BIRD_DOWN : BIRD_UP, ox, oy, 2, fgStr);
+  }
+
+  /* =======================================================
+     DINO RENDERING (استفاده از عکس کاربر)
+     ======================================================= */
+  const tx = Math.round(trex.x);
+  const ty = Math.round(trex.top);
+
+  if (trex.ducking) {
+    drawSprite(TREX_DUCK, tx, ty, 2, fgStr);
+  } else if (imageLoaded) {
+    // استفاده از عکس اصلی شما (سایز 48 در 48)
+    ctx.drawImage(dinoImage, tx, ty + (trex.onGround ? (trex.frame ? 0 : -2) : 0), 48, 48);
+  } else {
+    // اگر عکس لود نشده بود، از پیکسل‌های پیش‌فرض استفاده می‌کند
+    drawSprite(TREX_STAND, tx, ty, 2, fgStr);
+  }
+
+  drawScore(fgStr, now);
+
+  if (game.state === 'over') {
+    drawGameOver(fgStr, now);
+  }
+
+  if (game.state === 'waiting') {
+    const msg = 'PRESS SPACE';
+    const wdt = textWidth(msg, 1);
+    const a = 0.55 + 0.45 * Math.sin(now / 350);
+    ctx.globalAlpha = a;
+    drawText(msg, Math.round((W - wdt) / 2), 44, 1, fgStr);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawScore(fgStr, now) {
+  const scoreStr = String(game.score).padStart(5, '0');
+  const scale = 2;
+  const gap = 24;
+
+  let right = W - 12;
+  let y = 12;
+
+  const sw = textWidth(scoreStr, scale);
+  let sx = right - sw;
+
+  let visible = true;
+  if (game.flashTimer > 0) {
+    visible = Math.floor(game.flashTimer / 5) % 2 === 0;
+  }
+
+  if (visible) drawText(scoreStr, sx, y, scale, fgStr);
+
+  if (game.highScore > 0) {
+    const hiStr = 'HI ' + String(game.highScore).padStart(5, '0');
+    const hw = textWidth(hiStr, scale);
+    const hx = sx - gap - hw;
+    if (hx > 0) {
+      ctx.globalAlpha = visible ? 1 : 0.35;
+      drawText(hiStr, hx, y, scale, fgStr);
+      ctx.globalAlpha = 1;
+    }
+  }
+}
+
+function drawGameOver(fgStr, now) {
+  const msg = 'GAME OVER';
+  const scale = 2;
+  const mw = textWidth(msg, scale);
+  drawText(msg, Math.round((W - mw) / 2), 46, scale, fgStr);
+
+  const cx = W / 2, cy = 96, r = 11;
+  ctx.strokeStyle = fgStr;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, Math.PI * 0.32, Math.PI * 1.92);
+  ctx.stroke();
+
+  const ang = Math.PI * 1.92;
+  const px = cx + Math.cos(ang) * r;
+  const py = cy + Math.sin(ang) * r;
+  ctx.fillStyle = fgStr;
+  ctx.beginPath();
+  ctx.moveTo(px - 6, py - 6);
+  ctx.lineTo(px + 5, py - 3);
+  ctx.lineTo(px - 5, py + 5);
+  ctx.closePath();
+  ctx.fill();
+
+  if (game.newHigh) {
+    const t = 'NEW HI';
+    const tw = textWidth(t, 1);
+    const a = 0.6 + 0.4 * Math.sin(now / 220);
+    ctx.globalAlpha = a;
+    drawText(t, Math.round((W - tw) / 2), 118, 1, fgStr);
+    ctx.globalAlpha = 1;
+  }
+}
+
+/* =========================================================
+   MAIN LOOP & INPUT
+   ========================================================= */
+let lastTime = 0;
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (!lastTime) lastTime = now;
+  let dt = (now - lastTime) / (1000 / 60);
+  lastTime = now;
+  if (dt > 3) dt = 3;
+  if (dt <= 0) dt = 1;
+  update(dt);
+  render(now);
+}
+
+function startOrRestart() {
+  ensureAudio();
+  if (AC && AC.state === 'suspended') AC.resume();
+
+  if (game.state === 'waiting') {
+    resetGame();
+  } else if (game.state === 'over') {
+    if (performance.now() - game.overTime > 350) resetGame();
+  } else {
+    trex.jump();
+  }
+}
+
+function onKeyDown(e) {
+  const k = e.code;
+  if (k === 'Space' || k === 'ArrowUp' || k === 'KeyW') {
+    e.preventDefault();
+    ensureAudio();
+    if (AC && AC.state === 'suspended') AC.resume();
+    if (game.state === 'playing') trex.jump();
+    else startOrRestart();
+    return;
+  }
+  if (k === 'ArrowDown' || k === 'KeyS') {
+    e.preventDefault();
+    ensureAudio();
+    if (game.state === 'playing') trex.duckKey = true;
+    return;
+  }
+}
+
+function onKeyUp(e) {
+  const k = e.code;
+  if (k === 'Space' || k === 'ArrowUp' || k === 'KeyW') {
+    if (game.state === 'playing') trex.endJump();
+    return;
+  }
+  if (k === 'ArrowDown' || k === 'KeyS') {
+    trex.duckKey = false;
+    return;
+  }
+}
+
+function onPointerDown(e) {
+  e.preventDefault();
+  ensureAudio();
+  if (AC && AC.state === 'suspended') AC.resume();
+
+  if (game.state === 'playing') {
+    const rect = canvas.getBoundingClientRect();
+    const px = (e.clientX - rect.left) / rect.width;
+    const py = (e.clientY - rect.top) / rect.height;
+    if (px > 0.7 && py > 0.4) {
+      trex.duckKey = true;
+      setTimeout(() => { trex.duckKey = false; }, 450);
+    } else {
+      trex.jump();
+    }
+  } else {
+    startOrRestart();
+  }
+}
+
+function onPointerUp(e) {
+  if (game.state === 'playing') {
+    trex.endJump();
+    trex.duckKey = false;
+  }
+}
+
+window.addEventListener('keydown', onKeyDown, { passive: false });
+window.addEventListener('keyup', onKeyUp);
+canvas.addEventListener('pointerdown', onPointerDown, { passive: false });
+window.addEventListener('pointerup', onPointerUp);
+window.addEventListener('blur', () => { trex.duckKey = false; });
+
+trex.reset();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>
